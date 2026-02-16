@@ -1,0 +1,35 @@
+seed: 42
+device: cpu
+batch_size: 32
+num_workers: 0
+
+images_raw_dir: data/images_raw
+images_clean_dir: data/images_clean
+manifests_dir: manifests
+max_side: 1024
+jpeg_quality: 92
+dedupe_threshold: 6
+
+embeddings_dir: embeddings
+clip_arch: ViT-B-32
+clip_pretrained: laion2b_s34b_b79k
+ink_luma_threshold: 64
+void_luma_threshold: 224
+canny_low_threshold: 100
+canny_high_threshold: 200
+outputs_dir: outputs
+w_dino: 0.65
+w_stats: 0.30
+w_clip: 0.05
+cluster_use_pca: true
+cluster_pca_dim: 128
+hdbscan_min_cluster_size: 15
+hdbscan_min_samples: null
+export_dir: style_lock_pack_v1
+export_top_n_clusters: 7
+export_rank_by: size
+dino_model_name: timm/vit_base_patch14_dinov2.lvd142m
+anchors_include_noise: false
+anchors_k_centroids: 3
+anchors_m_edges: 2
+anchor_crop_size: 256
