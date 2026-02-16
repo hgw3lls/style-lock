@@ -1,4 +1,4 @@
-"""Anchor-set generation from clustered style vectors."""
+"""Anchor-set generation: centroids, edges, and texture crops."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import csv
 import json
 import shutil
 from dataclasses import dataclass
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -31,21 +30,23 @@ def _load_manifest(config: PipelineConfig) -> list[ManifestRow]:
     return rows
 
 
-def _best_crop(gray: np.ndarray, crop_size: int) -> tuple[int, int, int, int]:
+def _best_crop(gray: np.ndarray, crop_size: int) -> tuple[int, int, int]:
     h, w = gray.shape
     c = min(crop_size, h, w)
-    mag = cv2.magnitude(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
 
     best_score = -1.0
-    best = (0, 0, c, c)
+    best_xy = (0, 0)
     step = max(8, c // 8)
     for y in range(0, max(1, h - c + 1), step):
         for x in range(0, max(1, w - c + 1), step):
             score = float(mag[y : y + c, x : x + c].mean())
             if score > best_score:
                 best_score = score
-                best = (x, y, c, c)
-    return best
+                best_xy = (x, y)
+    return best_xy[0], best_xy[1], c
 
 
 def run_anchors(config: PipelineConfig, force: bool = False, console: Console | None = None) -> dict[str, int | str]:
@@ -54,7 +55,6 @@ def run_anchors(config: PipelineConfig, force: bool = False, console: Console | 
     style_vec = np.load(config.outputs_dir / "style_vec.npy")
     cluster_map = json.loads((config.outputs_dir / "clusters.json").read_text(encoding="utf-8"))
     manifest = _load_manifest(config)
-
     if style_vec.ndim != 2 or style_vec.shape[0] != len(manifest):
         raise ValueError("style_vec row count must match manifest")
 
@@ -67,69 +67,66 @@ def run_anchors(config: PipelineConfig, force: bool = False, console: Console | 
     image_ids = [m.image_id for m in manifest]
     cluster_ids = np.array([int(cluster_map.get(iid, -1)) for iid in image_ids], dtype=int)
 
-    unique_clusters = sorted(set(cluster_ids.tolist()))
+    clusters = sorted(set(cluster_ids.tolist()))
     if not config.anchors_include_noise:
-        unique_clusters = [c for c in unique_clusters if c != -1]
+        clusters = [c for c in clusters if c != -1]
 
     rows_out: list[dict[str, str | int | float]] = []
-
-    for cid in unique_clusters:
+    for cid in clusters:
         idx = np.where(cluster_ids == cid)[0]
         if idx.size == 0:
             continue
 
         vecs = style_vec[idx]
-        center = vecs.mean(axis=0, keepdims=True)
-        dist = np.linalg.norm(vecs - center, axis=1)
+        mean = vecs.mean(axis=0, keepdims=True)
+        dist = np.linalg.norm(vecs - mean, axis=1)
 
-        k = min(config.anchors_k_centroids, idx.size)
-        m = min(config.anchors_m_edges, idx.size)
-        centroid_local = np.argsort(dist)[:k]
-        edge_local = np.argsort(dist)[::-1][:m]
+        cent_local = np.argsort(dist)[: min(config.anchors_k_centroids, idx.size)]
+        edge_local = np.argsort(dist)[::-1][: min(config.anchors_m_edges, idx.size)]
 
         cluster_dir = out_root / f"cluster_{cid}"
         cent_dir = cluster_dir / "centroids"
         edge_dir = cluster_dir / "edges"
         crop_dir = cluster_dir / "crops"
-        cent_dir.mkdir(parents=True, exist_ok=True)
-        edge_dir.mkdir(parents=True, exist_ok=True)
-        crop_dir.mkdir(parents=True, exist_ok=True)
+        for d in (cent_dir, edge_dir, crop_dir):
+            d.mkdir(parents=True, exist_ok=True)
 
-        selected_global = [(idx[i], "centroid", float(dist[i])) for i in centroid_local] + [
+        selected = [(idx[i], "centroid", float(dist[i])) for i in cent_local] + [
             (idx[i], "edge", float(dist[i])) for i in edge_local
         ]
 
-        for global_idx, role, distance in selected_global:
-            item = manifest[global_idx]
-            src = config.images_clean_dir / item.clean_path
+        for global_idx, role, distance in selected:
+            m = manifest[global_idx]
+            src = config.images_clean_dir / m.clean_path
             role_dir = cent_dir if role == "centroid" else edge_dir
-            anchor_path = role_dir / f"{item.image_id}.jpg"
+            anchor_path = role_dir / f"{m.image_id}.jpg"
             shutil.copy2(src, anchor_path)
 
-            crop_path = crop_dir / f"{item.image_id}.jpg"
-            with Image.open(src) as img:
-                rgb = img.convert("RGB")
-                arr = np.array(rgb)
-                gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-                x, y, c, _ = _best_crop(gray, config.anchor_crop_size)
-                crop = rgb.crop((x, y, x + c, y + c))
-                crop.save(crop_path, format="JPEG", quality=95)
+            crop_path = crop_dir / f"{m.image_id}.jpg"
+            with Image.open(src) as im:
+                rgb = im.convert("RGB")
+                gray = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2GRAY)
+                x, y, c = _best_crop(gray, config.anchor_crop_size)
+                rgb.crop((x, y, x + c, y + c)).save(crop_path, format="JPEG", quality=95)
 
             rows_out.append(
                 {
-                    "image_id": item.image_id,
-                    "cluster_id": int(cid),
+                    "image_id": m.image_id,
+                    "cluster_id": cid,
                     "role": role,
-                    "distance": distance,
+                    "distance_to_mean": distance,
+                    "anchor_path": str(anchor_path),
                     "crop_path": str(crop_path),
                 }
             )
 
-    with index_path.open("w", encoding="utf-8", newline="") as h:
-        writer = csv.DictWriter(h, fieldnames=["image_id", "cluster_id", "role", "distance", "crop_path"])
+    with index_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["image_id", "cluster_id", "role", "distance_to_mean", "anchor_path", "crop_path"],
+        )
         writer.writeheader()
-        for row in rows_out:
-            writer.writerow(row)
+        writer.writerows(rows_out)
 
     rich_console.print(f"[bold green]Anchors complete[/bold green] rows={len(rows_out)}")
     return {"anchors_index": str(index_path), "rows": len(rows_out)}

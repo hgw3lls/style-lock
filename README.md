@@ -1,147 +1,62 @@
-# style_lock
+# Style Lock Pack Compiler
 
-A production-ready scaffold for deterministic style pipeline workflows.
+A production-ready Python CLI that distills an image style dataset into an uploadable **anchor pack** plus textual style-lock spec for downstream image generators.
 
-## Features
+## Install
 
-- Python 3.10+
-- CLI via Typer: `stylelock`
-- Rich logging/progress output
-- Pydantic config validation
-- Deterministic seeds (`random`, `numpy`, optional `torch`)
-- Optional GPU support (`--device cpu|cuda`)
-- Image preprocessing with resize, RGB conversion, JPEG normalization, and perceptual-hash dedupe
-- CLIP embedding (`stylelock embed --model clip`) via `open_clip_torch`
-- Handcrafted image statistics extraction (`stylelock stats`) via OpenCV
-- Optional parquet manifests/stats tables (`--use-parquet`)
-- Fast iteration limit across stages (`--limit N`)
-- Optional mixed precision embedding on CUDA (`--mixed-precision`)
-- Optional per-image embedding cache (`embeddings/cache/*`)
-
-## Installation
-
+### pip
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-## Quickstart
-
-## One command pipeline
-
+### uv
 ```bash
-stylelock run-all --config config.yaml --device cpu --force
+uv venv
+source .venv/bin/activate
+uv pip install -e .
 ```
 
-This executes: preprocess -> embed dino -> embed clip -> stats -> cluster -> anchors -> export.
-Use `--limit N` for quick iteration, `--use-parquet` for parquet tabular IO, and `--mixed-precision` on CUDA for faster embeddings.
-Each stage skips existing outputs unless `--force` is provided.
-
-
-1. Copy the example config:
+## Configure
+Copy and edit the example:
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-2. Run preprocess:
+`data/images_raw/` should contain your source images (recursive discovery supported).
+
+## One-liner run
 
 ```bash
-stylelock preprocess --config config.yaml
+stylelock run-all --config config.yaml
 ```
 
-3. Run CLIP embedding:
+This runs: preprocess -> embed (dino + clip) -> stats -> cluster -> anchors -> export.
 
-```bash
-stylelock embed --config config.yaml --model clip
-```
+## Output
+The command creates `style_lock_pack_v1/` containing:
+- `anchors/cluster_{id}/centroids/*.jpg`
+- `anchors/cluster_{id}/edges/*.jpg`
+- `anchors/cluster_{id}/crops/*.jpg`
+- `STYLE_LOCK_SPEC.md`
+- `style_axes.yaml`
+- `clusters.json`
+- `cluster_summary.csv`
+- `umap.png`
+- `anchors_index.csv`
+- `config_resolved.yaml`
+- `readme.md`
 
-4. Override CLIP model settings:
+## Using the pack with an image generator/assistant
+1. Upload the `anchors/` folder (and optionally `umap.png` for team review).
+2. Paste `STYLE_LOCK_SPEC.md` into the assistant/system style instructions.
+3. Keep prompts on-subject while preserving the style lock directives.
+4. Use `style_axes.yaml` for machine-readable guardrails in tooling.
 
-```bash
-stylelock embed \
-  --config config.yaml \
-  --model clip \
-  --clip-arch ViT-B-32 \
-  --clip-pretrained laion2b_s34b_b79k \
-  --force
-```
-
-5. Run stats extraction:
-
-```bash
-stylelock stats --config config.yaml
-```
-
-6. Run clustering:
-
-```bash
-stylelock cluster --config config.yaml
-```
-
-7. Build export pack:
-
-```bash
-stylelock export --config config.yaml
-```
-
-8. Run the full pipeline:
-
-```bash
-stylelock run-all --config config.yaml --model clip
-```
-
-### Preprocess outputs
-
-- `manifests/images_clean.csv` (default) or `manifests/images_clean.parquet` (`--use-parquet`) with columns:
-  - `image_id`
-  - `src_path`
-  - `clean_path`
-  - `width`
-  - `height`
-  - `phash`
-  - `bytes`
-
-### Embed (CLIP) outputs
-
-- `embeddings/clip.npy` as float32 shape `[N, D]`
-- `embeddings/clip_meta.json` with `arch`, `pretrained`, `D`, `seed`, `device`, mixed precision/cache flags, and metadata
-- Resume behavior: if existing embedding has matching `N`, command skips unless `--force`
-
-### Stats outputs
-
-- `embeddings/stats.csv` (default) or `embeddings/stats.parquet` (`--use-parquet`) with `image_id` and scalar feature columns
-- `embeddings/stats.npy` numeric matrix `[N, F]`
-- `embeddings/stats_meta.json` with thresholds and feature list
-
-### Cluster outputs
-
-- `outputs/style_vec.npy` final weighted concatenated style vectors
-- `outputs/clusters.json` mapping `image_id -> cluster_id`
-- `outputs/cluster_summary.csv` with count/probability and summary norms per cluster
-- `outputs/umap_2d.npy` 2D UMAP coordinates
-- `outputs/umap.png` UMAP scatter colored by cluster labels (`-1` is noise)
-
-### Export outputs
-
-- `${export_dir}/anchors/` selected cluster anchor folders
-- `${export_dir}/crops/` all crop images flattened for quick upload
-- `${export_dir}/cluster_summary.csv`, `${export_dir}/clusters.json`
-- `${export_dir}/resolved_config.yaml` config snapshot
-- `${export_dir}/STYLE_LOCK_SPEC.md` scaffold with required lock sections
-- `${export_dir}/readme.md` upload and prompt usage instructions
-
-## Commands
-
-- `preprocess`
-- `embed`
-- `stats`
-- `cluster`
-- `anchors`
-- `export`
-- `run-all`
+## Example config
+See `config.example.yaml` for all defaults (model names, weights, thresholds, clustering, and export settings).
 
 ## License
-
 MIT

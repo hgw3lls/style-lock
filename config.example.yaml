@@ -36,4 +36,4 @@ cache_embeddings: true
 anchors_include_noise: false
 anchors_k_centroids: 3
 anchors_m_edges: 2
-anchor_crop_size: 256
+anchor_crop_size: 384

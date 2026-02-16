@@ -66,7 +66,7 @@ class PipelineConfig(BaseModel):
     anchors_include_noise: bool = Field(default=False)
     anchors_k_centroids: int = Field(default=3, ge=1)
     anchors_m_edges: int = Field(default=2, ge=1)
-    anchor_crop_size: int = Field(default=256, ge=64)
+    anchor_crop_size: int = Field(default=384, ge=64)
 
 
 def _set_nested_value(target: dict[str, Any], dotted_key: str, value: Any) -> None:

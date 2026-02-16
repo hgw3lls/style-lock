@@ -56,7 +56,7 @@ class UnionFind:
 def _resize_to_max_side(image: Image.Image, max_side: int) -> Image.Image:
     width, height = image.size
     longest = max(width, height)
-    if longest == max_side:
+    if longest <= max_side:
         return image
 
     ratio = max_side / float(longest)
