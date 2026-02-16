@@ -13,6 +13,10 @@ A production-ready scaffold for deterministic style pipeline workflows.
 - Image preprocessing with resize, RGB conversion, JPEG normalization, and perceptual-hash dedupe
 - CLIP embedding (`stylelock embed --model clip`) via `open_clip_torch`
 - Handcrafted image statistics extraction (`stylelock stats`) via OpenCV
+- Optional parquet manifests/stats tables (`--use-parquet`)
+- Fast iteration limit across stages (`--limit N`)
+- Optional mixed precision embedding on CUDA (`--mixed-precision`)
+- Optional per-image embedding cache (`embeddings/cache/*`)
 
 ## Installation
 
@@ -31,6 +35,7 @@ stylelock run-all --config config.yaml --device cpu --force
 ```
 
 This executes: preprocess -> embed dino -> embed clip -> stats -> cluster -> anchors -> export.
+Use `--limit N` for quick iteration, `--use-parquet` for parquet tabular IO, and `--mixed-precision` on CUDA for faster embeddings.
 Each stage skips existing outputs unless `--force` is provided.
 
 
@@ -89,7 +94,7 @@ stylelock run-all --config config.yaml --model clip
 
 ### Preprocess outputs
 
-- `manifests/images_clean.csv` with columns:
+- `manifests/images_clean.csv` (default) or `manifests/images_clean.parquet` (`--use-parquet`) with columns:
   - `image_id`
   - `src_path`
   - `clean_path`
@@ -101,12 +106,12 @@ stylelock run-all --config config.yaml --model clip
 ### Embed (CLIP) outputs
 
 - `embeddings/clip.npy` as float32 shape `[N, D]`
-- `embeddings/clip_meta.json` with `arch`, `pretrained`, `D`, `seed`, `device`, and metadata
+- `embeddings/clip_meta.json` with `arch`, `pretrained`, `D`, `seed`, `device`, mixed precision/cache flags, and metadata
 - Resume behavior: if existing embedding has matching `N`, command skips unless `--force`
 
 ### Stats outputs
 
-- `embeddings/stats.csv` with `image_id` and scalar feature columns
+- `embeddings/stats.csv` (default) or `embeddings/stats.parquet` (`--use-parquet`) with `image_id` and scalar feature columns
 - `embeddings/stats.npy` numeric matrix `[N, F]`
 - `embeddings/stats_meta.json` with thresholds and feature list
 

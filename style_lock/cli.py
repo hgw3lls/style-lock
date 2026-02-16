@@ -28,6 +28,10 @@ def resolve_config(
     device: str | None,
     batch_size: int | None,
     num_workers: int | None,
+    limit: int | None = None,
+    use_parquet: bool | None = None,
+    mixed_precision: bool | None = None,
+    cache_embeddings: bool | None = None,
     overrides: dict[str, object | None] | None = None,
 ) -> PipelineConfig:
     payload: dict[str, object | None] = {
@@ -35,6 +39,10 @@ def resolve_config(
         "device": coerce_device(device),
         "batch_size": batch_size,
         "num_workers": num_workers,
+        "limit": limit,
+        "use_parquet": use_parquet,
+        "mixed_precision": mixed_precision,
+        "cache_embeddings": cache_embeddings,
     }
     payload.update(overrides or {})
     cfg = load_config(config, payload)
@@ -67,8 +75,10 @@ def preprocess_cmd(
     max_side: int | None = typer.Option(None, "--max-side"),
     jpeg_quality: int | None = typer.Option(None, "--jpeg-quality"),
     dedupe_threshold: int | None = typer.Option(None, "--dedupe-threshold"),
+    limit: int | None = typer.Option(None, "--limit"),
+    use_parquet: bool | None = typer.Option(None, "--use-parquet/--no-use-parquet"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, {
+    cfg = resolve_config(config, seed, device, batch_size, num_workers, limit=limit, use_parquet=use_parquet, overrides={
         "images_raw_dir": images_raw_dir,
         "images_clean_dir": images_clean_dir,
         "manifests_dir": manifests_dir,
@@ -94,8 +104,12 @@ def embed_cmd(
     clip_pretrained: str | None = typer.Option(None, "--clip-pretrained"),
     dino_model_name: str | None = typer.Option(None, "--dino-model-name"),
     force: bool = typer.Option(False, "--force"),
+    limit: int | None = typer.Option(None, "--limit"),
+    mixed_precision: bool | None = typer.Option(None, "--mixed-precision/--no-mixed-precision"),
+    cache_embeddings: bool | None = typer.Option(None, "--cache-embeddings/--no-cache-embeddings"),
+    use_parquet: bool | None = typer.Option(None, "--use-parquet/--no-use-parquet"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, {
+    cfg = resolve_config(config, seed, device, batch_size, num_workers, limit=limit, use_parquet=use_parquet, mixed_precision=mixed_precision, cache_embeddings=cache_embeddings, overrides={
         "images_clean_dir": images_clean_dir,
         "manifests_dir": manifests_dir,
         "embeddings_dir": embeddings_dir,
@@ -126,8 +140,10 @@ def stats_cmd(
     void_luma_threshold: int | None = typer.Option(None, "--void-luma-threshold"),
     canny_low_threshold: int | None = typer.Option(None, "--canny-low-threshold"),
     canny_high_threshold: int | None = typer.Option(None, "--canny-high-threshold"),
+    limit: int | None = typer.Option(None, "--limit"),
+    use_parquet: bool | None = typer.Option(None, "--use-parquet/--no-use-parquet"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, {
+    cfg = resolve_config(config, seed, device, batch_size, num_workers, limit=limit, use_parquet=use_parquet, overrides={
         "images_clean_dir": images_clean_dir,
         "manifests_dir": manifests_dir,
         "embeddings_dir": embeddings_dir,
@@ -157,7 +173,7 @@ def cluster_cmd(
     hdbscan_min_cluster_size: int | None = typer.Option(None, "--hdbscan-min-cluster-size"),
     hdbscan_min_samples: int | None = typer.Option(None, "--hdbscan-min-samples"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, {
+    cfg = resolve_config(config, seed, device, batch_size, num_workers, overrides={
         "embeddings_dir": embeddings_dir,
         "manifests_dir": manifests_dir,
         "outputs_dir": outputs_dir,
@@ -188,7 +204,7 @@ def anchors_cmd(
     anchor_crop_size: int | None = typer.Option(None, "--anchor-crop-size"),
     force: bool = typer.Option(False, "--force"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, {
+    cfg = resolve_config(config, seed, device, batch_size, num_workers, overrides={
         "manifests_dir": manifests_dir,
         "images_clean_dir": images_clean_dir,
         "outputs_dir": outputs_dir,
@@ -212,7 +228,7 @@ def export_cmd(
     export_top_n_clusters: int | None = typer.Option(None, "--export-top-n-clusters"),
     export_rank_by: str | None = typer.Option(None, "--export-rank-by"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, {
+    cfg = resolve_config(config, seed, device, batch_size, num_workers, overrides={
         "outputs_dir": outputs_dir,
         "export_dir": export_dir,
         "export_top_n_clusters": export_top_n_clusters,
@@ -229,10 +245,25 @@ def run_all_cmd(
     batch_size: int | None = typer.Option(None, "--batch-size"),
     num_workers: int | None = typer.Option(None, "--num-workers"),
     force: bool = typer.Option(False, "--force"),
+    limit: int | None = typer.Option(None, "--limit"),
+    use_parquet: bool | None = typer.Option(None, "--use-parquet/--no-use-parquet"),
+    mixed_precision: bool | None = typer.Option(None, "--mixed-precision/--no-mixed-precision"),
+    cache_embeddings: bool | None = typer.Option(None, "--cache-embeddings/--no-cache-embeddings"),
 ) -> None:
-    cfg = resolve_config(config, seed, device, batch_size, num_workers, None)
+    cfg = resolve_config(
+        config,
+        seed,
+        device,
+        batch_size,
+        num_workers,
+        limit=limit,
+        use_parquet=use_parquet,
+        mixed_precision=mixed_precision,
+        cache_embeddings=cache_embeddings,
+        overrides=None,
+    )
 
-    manifest_path = cfg.manifests_dir / "images_clean.csv"
+    manifest_path = cfg.manifests_dir / ("images_clean.parquet" if cfg.use_parquet else "images_clean.csv")
     dino_path = cfg.embeddings_dir / "dino.npy"
     clip_path = cfg.embeddings_dir / "clip.npy"
     stats_path = cfg.embeddings_dir / "stats.npy"

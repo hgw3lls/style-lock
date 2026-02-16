@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +13,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from .config import PipelineConfig
+from .tabular import manifest_path, read_rows, stats_path, write_rows
 
 
 @dataclass
@@ -41,16 +41,13 @@ FEATURE_COLUMNS = [
 ]
 
 
-def _load_manifest(manifest_path: Path) -> list[ManifestRow]:
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Manifest does not exist: {manifest_path}")
-
-    rows: list[ManifestRow] = []
-    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            rows.append(ManifestRow(image_id=row["image_id"], clean_path=row["clean_path"]))
-    return rows
+def _load_manifest(config: PipelineConfig) -> tuple[list[ManifestRow], Path]:
+    path = manifest_path(config.manifests_dir, config.use_parquet)
+    rows_raw = read_rows(path)
+    rows = [ManifestRow(image_id=str(row["image_id"]), clean_path=str(row["clean_path"])) for row in rows_raw]
+    if config.limit is not None:
+        rows = rows[: config.limit]
+    return rows, path
 
 
 def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
@@ -149,11 +146,10 @@ def run_stats(config: PipelineConfig, console: Console | None = None) -> dict[st
     """Compute per-image handcrafted stats features and save csv/npy/meta outputs."""
 
     rich_console = console or Console()
-    manifest_path = config.manifests_dir / "images_clean.csv"
-    rows = _load_manifest(manifest_path)
+    rows, resolved_manifest = _load_manifest(config)
 
     config.embeddings_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = config.embeddings_dir / "stats.csv"
+    table_path = stats_path(config.embeddings_dir, config.use_parquet)
     npy_path = config.embeddings_dir / "stats.npy"
     meta_path = config.embeddings_dir / "stats_meta.json"
 
@@ -188,15 +184,14 @@ def run_stats(config: PipelineConfig, console: Console | None = None) -> dict[st
                 failed += 1
                 rich_console.log(f"[yellow]stats: skipping corrupt/unreadable image[/yellow] {path}: {exc}")
 
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["image_id", *FEATURE_COLUMNS])
-        writer.writeheader()
-        for i, row in enumerate(rows):
-            payload = {"image_id": row.image_id}
-            for j, col in enumerate(FEATURE_COLUMNS):
-                value = matrix[i, j]
-                payload[col] = "" if np.isnan(value) else float(value)
-            writer.writerow(payload)
+    table_rows: list[dict[str, float | str | None]] = []
+    for i, row in enumerate(rows):
+        payload: dict[str, float | str | None] = {"image_id": row.image_id}
+        for j, col in enumerate(FEATURE_COLUMNS):
+            value = matrix[i, j]
+            payload[col] = None if np.isnan(value) else float(value)
+        table_rows.append(payload)
+    write_rows(table_path, table_rows, fieldnames=["image_id", *FEATURE_COLUMNS], use_parquet=config.use_parquet)
 
     np.save(npy_path, matrix)
 
@@ -209,20 +204,21 @@ def run_stats(config: PipelineConfig, console: Console | None = None) -> dict[st
         "rows": len(rows),
         "failed": failed,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "manifest": str(resolved_manifest),
     }
     with meta_path.open("w", encoding="utf-8") as handle:
         json.dump(meta, handle, indent=2)
 
     rich_console.print("[bold green]Stats complete[/bold green]")
     rich_console.print(f"Rows={len(rows)} Failed={failed} Features={len(FEATURE_COLUMNS)}")
-    rich_console.print(f"Saved: {csv_path}")
+    rich_console.print(f"Saved: {table_path}")
     rich_console.print(f"Saved: {npy_path}")
     rich_console.print(f"Saved: {meta_path}")
 
     return {
         "rows": len(rows),
         "failed": failed,
-        "csv": str(csv_path),
+        "table": str(table_path),
         "npy": str(npy_path),
         "meta": str(meta_path),
     }

@@ -9,6 +9,8 @@ manifests_dir: manifests
 max_side: 1024
 jpeg_quality: 92
 dedupe_threshold: 6
+limit: null
+use_parquet: false
 
 embeddings_dir: embeddings
 clip_arch: ViT-B-32
@@ -29,6 +31,8 @@ export_dir: style_lock_pack_v1
 export_top_n_clusters: 7
 export_rank_by: size
 dino_model_name: timm/vit_base_patch14_dinov2.lvd142m
+mixed_precision: false
+cache_embeddings: true
 anchors_include_noise: false
 anchors_k_centroids: 3
 anchors_m_edges: 2

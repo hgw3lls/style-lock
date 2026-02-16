@@ -30,12 +30,16 @@ class PipelineConfig(BaseModel):
     max_side: int = Field(default=1024, ge=64)
     jpeg_quality: int = Field(default=92, ge=1, le=100)
     dedupe_threshold: int = Field(default=6, ge=0, le=64)
+    limit: int | None = Field(default=None, ge=1)
+    use_parquet: bool = Field(default=False)
 
     # Embedding
     embeddings_dir: Path = Field(default=Path("embeddings"))
     clip_arch: str = Field(default="ViT-B-32")
     clip_pretrained: str = Field(default="laion2b_s34b_b79k")
     dino_model_name: str = Field(default="timm/vit_base_patch14_dinov2.lvd142m")
+    mixed_precision: bool = Field(default=False)
+    cache_embeddings: bool = Field(default=True)
 
     # Stats
     ink_luma_threshold: int = Field(default=64, ge=0, le=255)

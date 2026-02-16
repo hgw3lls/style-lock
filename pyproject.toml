@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 torch = ["torch>=2.1.0"]
+parquet = ["pyarrow>=16.0.0"]
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]

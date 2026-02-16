@@ -16,6 +16,7 @@ from rich.console import Console
 from sklearn.decomposition import PCA
 
 from .config import PipelineConfig
+from .tabular import manifest_path, read_rows
 
 
 @dataclass
@@ -23,15 +24,12 @@ class ManifestRow:
     image_id: str
 
 
-def _load_manifest_rows(manifest_path: Path) -> list[ManifestRow]:
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Manifest does not exist: {manifest_path}")
-
-    rows: list[ManifestRow] = []
-    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            rows.append(ManifestRow(image_id=row["image_id"]))
+def _load_manifest_rows(config: PipelineConfig) -> list[ManifestRow]:
+    path = manifest_path(config.manifests_dir, config.use_parquet)
+    rows_raw = read_rows(path)
+    rows = [ManifestRow(image_id=str(row["image_id"])) for row in rows_raw]
+    if config.limit is not None:
+        rows = rows[: config.limit]
     return rows
 
 
@@ -52,12 +50,11 @@ def _load_required_arrays(config: PipelineConfig) -> tuple[np.ndarray, np.ndarra
     dino_path = config.embeddings_dir / "dino.npy"
     clip_path = config.embeddings_dir / "clip.npy"
     stats_path = config.embeddings_dir / "stats.npy"
-    manifest_path = config.manifests_dir / "images_clean.csv"
 
     dino = np.load(dino_path)
     clip = np.load(clip_path)
     stats = np.load(stats_path)
-    manifest_rows = _load_manifest_rows(manifest_path)
+    manifest_rows = _load_manifest_rows(config)
 
     if dino.ndim != 2 or clip.ndim != 2 or stats.ndim != 2:
         raise ValueError("Expected dino.npy, clip.npy, stats.npy to all be rank-2 arrays")
