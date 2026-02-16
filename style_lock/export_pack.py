@@ -1,10 +1,11 @@
-"""Export pack builder for style_lock."""
+"""Export style_lock_pack_v1 artifacts, style axes, and lock spec."""
 
 from __future__ import annotations
 
 import csv
 import json
 import shutil
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -14,202 +15,233 @@ from rich.console import Console
 from .config import PipelineConfig
 
 
-SPEC_TEMPLATE = """# STYLE_LOCK_SPEC
-
-## 1) Non-negotiables (lock)
-- Core style invariants that must remain unchanged:
-  - Palette / tonal regime:
-  - Stroke/mark family:
-  - Spatial rhythm:
-  - Structural motif:
-
-## 2) Allowed variance
-- Controlled variation knobs:
-  - Subject matter range:
-  - Secondary texture variation:
-  - Degree of asymmetry:
-  - Acceptable color drift:
-
-## 3) Forbidden moves
-- Explicitly disallowed outputs:
-  - Avoid these compositional tropes:
-  - Avoid these rendering artifacts:
-  - Avoid these semantic cues:
-
-## 4) Plate / overprint logic rules
-- Layer and interaction rules:
-  - Plate order:
-  - Overprint/knockout behavior:
-  - Misregistration tolerance:
-
-## 5) Composition constraints (void/mass, reading path)
-- Layout constraints:
-  - Void-to-mass ratio target:
-  - Focal path / reading direction:
-  - Margin pressure:
-
-## 6) Mark physics directives (wobble, pressure, bleed)
-- Physical behavior directives:
-  - Wobble character:
-  - Pressure dynamics:
-  - Bleed/spread limits:
-
-## 7) Ontology rules (wrongness-without-reveal)
-- Keep the latent logic coherent but unresolved:
-  - What must feel “wrong”:
-  - What must remain hidden:
-  - What should be implied, not stated:
-
-## 8) Prompt skeleton (fill-in-the-blanks)
-Use this structure when prompting a generator:
-
-"Create [SUBJECT] in the locked style with [NON-NEGOTIABLES].
-Maintain [VOID/MASS RULE], [MARK PHYSICS], and [OVERPRINT LOGIC].
-Allow variation only in [ALLOWED VARIANCE].
-Avoid [FORBIDDEN MOVES].
-Preserve the sense of [ONTOLOGY RULE]."
-"""
-
-
-README_TEMPLATE = """# style_lock export pack
-
-This folder is a portable style pack for downstream image generation.
-
-## Contents
-- `anchors/`: representative anchor images by cluster
-- `crops/`: texture closeups (high-gradient local crops)
-- `cluster_summary.csv`: cluster-level metrics and ranking data
-- `clusters.json`: `image_id -> cluster_id` assignments
-- `resolved_config.yaml`: resolved config snapshot used for export
-- `STYLE_LOCK_SPEC.md`: editable style-lock specification template
-
-## How to use with an image generator
-1. Upload `anchors/` and `crops/` as visual references.
-2. Open `STYLE_LOCK_SPEC.md` and fill every placeholder section.
-3. Provide the completed spec text as system/style guidance to your generator.
-4. Start with low variation and increase only within the “Allowed variance” section.
-5. Reject outputs violating “Non-negotiables” or any “Forbidden moves”.
-
-## Recommended iteration loop
-- Generate a small batch (8–16 images)
-- Compare against centroid anchors first, then edge anchors
-- Tighten spec directives when drift appears
-"""
-
-
-def _load_cluster_summary(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing cluster summary: {path}")
-
-    rows: list[dict[str, Any]] = []
+def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            rows.append(row)
-    return rows
+        return list(csv.DictReader(handle))
 
 
-def _to_float(value: str | None) -> float:
-    if value in {None, "", "nan", "NaN"}:
-        return float("nan")
-    return float(value)
+def _to_float(v: str | None, default: float = float("nan")) -> float:
+    if v is None or v == "" or v.lower() == "nan":
+        return default
+    return float(v)
 
 
-def _to_int(value: str | None, default: int = 0) -> int:
+def _to_int(v: str | None, default: int = 0) -> int:
     try:
-        return int(value or default)
+        return int(v or default)
     except Exception:
         return default
 
 
-def _select_clusters(rows: list[dict[str, Any]], top_n: int, rank_by: str) -> list[int]:
-    filtered = [r for r in rows if _to_int(r.get("cluster_id"), -1) != -1]
-
-    if rank_by == "avg_prob":
-        filtered.sort(key=lambda r: _to_float(r.get("avg_prob")), reverse=True)
-    else:
-        filtered.sort(key=lambda r: _to_int(r.get("count"), 0), reverse=True)
-
-    return [_to_int(r.get("cluster_id"), -1) for r in filtered[:top_n]]
+def _axis_label_density(edge_density: float, ink: float, void: float) -> str:
+    score = edge_density + ink - void
+    if score > 0.35:
+        return "dense / ink-heavy"
+    if score < -0.05:
+        return "airy / void-forward"
+    return "balanced mass-void"
 
 
-def _copy_tree_if_exists(src: Path, dst: Path) -> None:
-    if not src.exists():
-        return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
+def _axis_label_contrast(std_luma: float, entropy: float) -> str:
+    score = std_luma / 64.0 + entropy / 8.0
+    if score > 1.7:
+        return "high-contrast / information-rich"
+    if score < 1.2:
+        return "soft-contrast / restrained"
+    return "moderate contrast"
+
+
+def _axis_label_center(com_x: float, com_y: float, radial: float) -> str:
+    if abs(com_x - 0.5) + abs(com_y - 0.5) < 0.2 and radial > 1.0:
+        return "center-anchored"
+    if radial < 0.8:
+        return "border-biased"
+    return "off-center drift"
+
+
+def _axis_label_texture(lap_var: float, entropy: float) -> str:
+    if lap_var > 600 and entropy > 5.0:
+        return "rough / noisy substrate"
+    if lap_var < 250:
+        return "smooth / controlled substrate"
+    return "mid-grain texture"
+
+
+def _axis_label_overprint(sat_mean: float, sat_std: float, corr_mean: float) -> str:
+    if sat_mean < 35 and corr_mean > 0.9:
+        return "limited plates / near-monochrome overprint"
+    if sat_std > 40 and corr_mean < 0.8:
+        return "plate separation visible / overprint interaction"
+    return "moderate plate coupling"
+
+
+def _build_style_axes(summary_rows: list[dict[str, str]], anchor_rows: list[dict[str, str]]) -> dict[str, Any]:
+    centroid_ids: dict[int, list[str]] = defaultdict(list)
+    edge_ids: dict[int, list[str]] = defaultdict(list)
+    for row in anchor_rows:
+        cid = _to_int(row.get("cluster_id"), -1)
+        if row.get("role") == "centroid":
+            centroid_ids[cid].append(str(row.get("image_id", "")))
+        elif row.get("role") == "edge":
+            edge_ids[cid].append(str(row.get("image_id", "")))
+
+    clusters: dict[str, Any] = {}
+    for row in summary_rows:
+        cid = _to_int(row.get("cluster_id"), -1)
+        if cid == -1:
+            continue
+
+        edge_density = _to_float(row.get("avg_edge_density"), 0.0)
+        ink_coverage = _to_float(row.get("avg_ink_coverage"), 0.0)
+        void_ratio = _to_float(row.get("avg_void_ratio"), 0.0)
+        std_luma = _to_float(row.get("avg_std_luma"), 0.0)
+        entropy = _to_float(row.get("avg_entropy"), 0.0)
+        com_x = _to_float(row.get("avg_center_of_mass_x"), 0.5)
+        com_y = _to_float(row.get("avg_center_of_mass_y"), 0.5)
+        radial = _to_float(row.get("avg_radial_energy_ratio"), 1.0)
+        lap_var = _to_float(row.get("avg_texture_laplacian_var"), 0.0)
+        sat_mean = _to_float(row.get("avg_saturation_mean"), 0.0)
+        sat_std = _to_float(row.get("avg_saturation_std"), 0.0)
+        corr_mean = (
+            _to_float(row.get("avg_corr_rg"), 0.0)
+            + _to_float(row.get("avg_corr_rb"), 0.0)
+            + _to_float(row.get("avg_corr_gb"), 0.0)
+        ) / 3.0
+
+        clusters[f"cluster_{cid}"] = {
+            "density_profile": {
+                "label": _axis_label_density(edge_density, ink_coverage, void_ratio),
+                "edge_density": edge_density,
+                "ink_coverage": ink_coverage,
+                "void_ratio": void_ratio,
+            },
+            "contrast_profile": {
+                "label": _axis_label_contrast(std_luma, entropy),
+                "std_luma": std_luma,
+                "entropy": entropy,
+            },
+            "center_gravity": {
+                "label": _axis_label_center(com_x, com_y, radial),
+                "center_of_mass_x": com_x,
+                "center_of_mass_y": com_y,
+                "radial_energy_ratio": radial,
+            },
+            "material_texture": {
+                "label": _axis_label_texture(lap_var, entropy),
+                "texture_laplacian_var": lap_var,
+                "entropy": entropy,
+            },
+            "overprint_proxy": {
+                "label": _axis_label_overprint(sat_mean, sat_std, corr_mean),
+                "saturation_mean": sat_mean,
+                "saturation_std": sat_std,
+                "corr_mean": corr_mean,
+            },
+            "representative_ids": centroid_ids[cid],
+            "boundary_ids": edge_ids[cid],
+            "notes": (
+                f"Cluster {cid} presents {_axis_label_density(edge_density, ink_coverage, void_ratio)} dynamics. "
+                f"Contrast reads as {_axis_label_contrast(std_luma, entropy)} with {_axis_label_texture(lap_var, entropy)} behavior.\n"
+                "Preserve mark pressure and overprint coupling from centroid anchors; use edge anchors as boundary guards."
+            ),
+        }
+
+    return {"clusters": clusters}
+
+
+def _build_spec(style_axes: dict[str, Any]) -> str:
+    cluster_lines = []
+    for cid in style_axes.get("clusters", {}).keys():
+        cluster_lines.append(f"- Match mark behavior and plate logic to anchors in `{cid}`.")
+    cluster_text = "\n".join(cluster_lines) if cluster_lines else "- No non-noise clusters found; inspect data quality before generation."
+
+    return f"""# STYLE_LOCK_SPEC.md
+
+## 1) Non-negotiables (LOCK)
+- Preserve mark physics from anchor clusters exactly: wobble amplitude, pressure transitions, hatch density, and correction marks.
+- Preserve material behavior: paper tooth visibility, ink bleed envelope, xerox/noise floor, and edge rag.
+- Preserve palette discipline and value curve inferred from anchors; do not introduce unrelated hue families.
+{cluster_text}
+
+## 2) Allowed variance (SAFE MUTATIONS)
+- Subject identity and iconography may change while retaining style physics.
+- Composition may rotate/reposition primary mass if void-to-mass ratio remains within cluster tendencies.
+- Minor plate drift and overlap changes are allowed within cluster overprint proxies.
+
+## 3) Forbidden moves (STYLE BREAKERS)
+- No glossy gradients, airbrush smoothing, or cinematic depth effects unless explicitly present in anchors.
+- No clean vector-perfect contouring if anchors display hand-pressure variation or wobble.
+- No palette expansion beyond observed cluster logic.
+
+## 4) Plate / overprint logic rules
+- Model output as plate-like passes; preserve overlap behavior and edge interactions seen in anchors.
+- Allow misregistration only at subtle amplitudes consistent with edge anchors.
+- Do not flatten overprint interactions into single blended gradients.
+
+## 5) Composition constraints (void/mass, reading paths, density windows)
+- Respect cluster density profile targets (edge density, ink coverage, void ratio).
+- Maintain reading-path coherence (center gravity and radial energy tendencies).
+- Keep negative space intentional; avoid fully saturated all-over fills unless anchors demand it.
+
+## 6) Mark physics directives (wobble, pressure, visible corrections, ink behavior)
+- Keep stroke start/end pressure, nib drag, and micro-jitter congruent with centroid anchors.
+- Preserve visible corrections/overdraw where present.
+- Simulate material transfer (bleed, dry-brush skip, toner noise) according to cluster texture profile.
+
+## 7) Ontology / tone rules
+- Keep output diagrammatic/score-like/painterly in the same mode as nearest anchor cluster.
+- Maintain "wrongness-without-reveal": suggest latent system logic without explicit explanation.
+- Tone must read as intentional artifact, not polished illustration.
+
+## 8) Prompt skeleton template
+- **SUBJECT (new content):** <what to depict>
+- **COMPOSITION:** <mass/void target, reading path, center gravity>
+- **STYLE LOCK DIRECTIVES:**
+  - Match anchor cluster: <cluster_id>
+  - Preserve mark wobble/pressure/hatch behavior
+  - Preserve density and contrast profile
+- **PALETTE / PLATE LOGIC:** <plate order, overprint behavior, misregistration tolerance>
+- **HUMANIZER / MATERIAL BEHAVIOR:** <paper tooth, bleed, xerox noise, correction marks>
+"""
 
 
 def run_export_pack(config: PipelineConfig, console: Console | None = None) -> dict[str, str | int]:
-    """Build a portable style pack from clustering and anchor outputs."""
+    """Build style_lock_pack_v1 for upload to downstream image generators."""
 
     rich_console = console or Console()
 
     export_dir = config.export_dir
+    if export_dir.exists():
+        shutil.rmtree(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
 
-    cluster_summary_path = config.outputs_dir / "cluster_summary.csv"
-    clusters_json_path = config.outputs_dir / "clusters.json"
     anchors_root = config.outputs_dir / "anchors"
+    if anchors_root.exists():
+        shutil.copytree(anchors_root, export_dir / "anchors")
 
-    summary_rows = _load_cluster_summary(cluster_summary_path)
-    selected_cluster_ids = _select_clusters(
-        summary_rows,
-        top_n=config.export_top_n_clusters,
-        rank_by=config.export_rank_by,
+    for fname in ["clusters.json", "cluster_summary.csv", "umap.png", "anchors_index.csv"]:
+        src = config.outputs_dir / fname
+        if src.exists():
+            shutil.copy2(src, export_dir / fname)
+
+    (export_dir / "config_resolved.yaml").write_text(
+        yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False),
+        encoding="utf-8",
     )
 
-    export_anchors_root = export_dir / "anchors"
-    export_anchors_root.mkdir(parents=True, exist_ok=True)
+    summary_rows = _read_csv(config.outputs_dir / "cluster_summary.csv")
+    anchor_rows = _read_csv(config.outputs_dir / "anchors_index.csv")
+    style_axes = _build_style_axes(summary_rows, anchor_rows)
+    (export_dir / "style_axes.yaml").write_text(yaml.safe_dump(style_axes, sort_keys=False), encoding="utf-8")
 
-    for cid in selected_cluster_ids:
-        src_cluster_dir = anchors_root / f"cluster_{cid}"
-        dst_cluster_dir = export_anchors_root / f"cluster_{cid}"
-        _copy_tree_if_exists(src_cluster_dir, dst_cluster_dir)
+    (export_dir / "STYLE_LOCK_SPEC.md").write_text(_build_spec(style_axes), encoding="utf-8")
 
-    # Also copy all crops across all clusters into a flat crops folder.
-    export_crops_root = export_dir / "crops"
-    export_crops_root.mkdir(parents=True, exist_ok=True)
-    if anchors_root.exists():
-        for crop in anchors_root.glob("cluster_*/crops/*.jpg"):
-            out_name = f"{crop.parent.parent.name}__{crop.name}"
-            shutil.copy2(crop, export_crops_root / out_name)
-
-    shutil.copy2(cluster_summary_path, export_dir / "cluster_summary.csv")
-    if clusters_json_path.exists():
-        shutil.copy2(clusters_json_path, export_dir / "clusters.json")
-
-    resolved_config_path = export_dir / "resolved_config.yaml"
-    with resolved_config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(config.model_dump(mode="json"), handle, sort_keys=False)
-
-    spec_path = export_dir / "STYLE_LOCK_SPEC.md"
-    spec_path.write_text(SPEC_TEMPLATE, encoding="utf-8")
-
-    readme_path = export_dir / "readme.md"
-    readme_path.write_text(README_TEMPLATE, encoding="utf-8")
-
-    meta_path = export_dir / "export_meta.json"
-    with meta_path.open("w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "selected_cluster_ids": selected_cluster_ids,
-                "top_n": config.export_top_n_clusters,
-                "rank_by": config.export_rank_by,
-            },
-            handle,
-            indent=2,
-        )
+    (export_dir / "readme.md").write_text(
+        "# style_lock_pack_v1\n\n"
+        "Upload `anchors/` plus `STYLE_LOCK_SPEC.md` to your image generator/assistant to lock style behavior.\n\n"
+        "Also inspect `style_axes.yaml`, `cluster_summary.csv`, and `umap.png` for QA before prompting.\n",
+        encoding="utf-8",
+    )
 
     rich_console.print("[bold green]Export pack complete[/bold green]")
-    rich_console.print(f"Export directory: {export_dir}")
-    rich_console.print(f"Selected clusters: {selected_cluster_ids}")
-
-    return {
-        "export_dir": str(export_dir),
-        "selected_clusters": len(selected_cluster_ids),
-        "spec": str(spec_path),
-        "readme": str(readme_path),
-    }
+    return {"export_dir": str(export_dir), "clusters": len(style_axes.get("clusters", {}))}

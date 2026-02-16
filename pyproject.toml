@@ -5,33 +5,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "style_lock"
 version = "0.1.0"
-description = "Deterministic style pipeline CLI scaffold"
+description = "Style Lock Pack compiler for image-generation style locking"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [
-  { name = "style_lock contributors" }
-]
+authors = [{ name = "style_lock contributors" }]
 dependencies = [
-  "typer>=0.12.0",
-  "rich>=13.7.0",
-  "pydantic>=2.6.0",
-  "PyYAML>=6.0.1",
-  "numpy>=1.26.0",
-  "Pillow>=10.0.0",
-  "ImageHash>=4.3.1",
-  "open_clip_torch>=2.26.1",
-  "timm>=1.0.7",
-  "opencv-python-headless>=4.9.0.80",
-  "hdbscan>=0.8.33",
-  "scikit-learn>=1.4.0",
-  "matplotlib>=3.8.0",
-  "umap-learn>=0.5.6",
+  "torch",
+  "torchvision",
+  "timm",
+  "open_clip_torch",
+  "pillow",
+  "opencv-python",
+  "imagehash",
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "umap-learn",
+  "hdbscan",
+  "matplotlib",
+  "pyyaml",
+  "typer",
+  "rich",
+  "pydantic",
+  "tqdm",
 ]
 
 [project.optional-dependencies]
-torch = ["torch>=2.1.0"]
-parquet = ["pyarrow>=16.0.0"]
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]
@@ -40,6 +40,5 @@ stylelock = "style_lock.cli:app"
 [tool.setuptools.packages.find]
 include = ["style_lock*"]
 
-[tool.ruff]
-line-length = 100
-target-version = "py310"
+[tool.pytest.ini_options]
+markers = ["smoke: smoke test for run-all pipeline"]

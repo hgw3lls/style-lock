@@ -77,6 +77,8 @@ def test_pipeline_smoke(tmp_path, monkeypatch):
     assert (tmp_path / "outputs" / "clusters.json").exists()
     assert (tmp_path / "outputs" / "anchors_index.csv").exists()
     assert (tmp_path / "pack" / "STYLE_LOCK_SPEC.md").exists()
+    assert (tmp_path / "pack" / "style_axes.yaml").exists()
+    assert (tmp_path / "pack" / "config_resolved.yaml").exists()
 
     stats = np.load(tmp_path / "embeddings" / "stats.npy")
     style_vec = np.load(tmp_path / "outputs" / "style_vec.npy")

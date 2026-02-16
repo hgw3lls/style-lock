@@ -31,7 +31,7 @@ FEATURE_COLUMNS = [
     "void_ratio",
     "center_of_mass_x",
     "center_of_mass_y",
-    "radial_energy",
+    "radial_energy_ratio",
     "saturation_mean",
     "saturation_std",
     "corr_rg",
@@ -106,7 +106,7 @@ def _compute_features(
     edge_binary = edges > 0
     center_energy = float(edge_binary[center_mask].mean()) if np.any(center_mask) else 0.0
     border_energy = float(edge_binary[border_mask].mean()) if np.any(border_mask) else 0.0
-    radial_energy = float(center_energy / max(border_energy, 1e-12))
+    radial_energy_ratio = float(center_energy / max(border_energy, 1e-12))
 
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     sat = hsv[..., 1].astype(np.float32)
@@ -132,7 +132,7 @@ def _compute_features(
         "void_ratio": void_ratio,
         "center_of_mass_x": center_of_mass_x,
         "center_of_mass_y": center_of_mass_y,
-        "radial_energy": radial_energy,
+        "radial_energy_ratio": radial_energy_ratio,
         "saturation_mean": saturation_mean,
         "saturation_std": saturation_std,
         "corr_rg": corr_rg,
