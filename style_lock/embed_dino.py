@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +16,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from torch.utils.data import DataLoader, Dataset
 
 from .config import PipelineConfig
+from .tabular import manifest_path, read_rows
 
 
 @dataclass
@@ -41,13 +42,13 @@ class CleanImageDataset(Dataset[tuple[torch.Tensor, str]]):
         return tensor, row.image_id
 
 
-def _load_manifest(manifest_path: Path) -> list[ManifestRow]:
-    rows: list[ManifestRow] = []
-    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            rows.append(ManifestRow(image_id=row["image_id"], clean_path=row["clean_path"]))
-    return rows
+def _load_manifest(config: PipelineConfig) -> tuple[list[ManifestRow], Path]:
+    mpath = manifest_path(config.manifests_dir, config.use_parquet)
+    rows_raw = read_rows(mpath)
+    rows = [ManifestRow(image_id=str(r["image_id"]), clean_path=str(r["clean_path"])) for r in rows_raw]
+    if config.limit is not None:
+        rows = rows[: config.limit]
+    return rows, mpath
 
 
 def run_embed_dino(config: PipelineConfig, force: bool = False, console: Console | None = None) -> dict[str, int | str]:
@@ -56,15 +57,13 @@ def run_embed_dino(config: PipelineConfig, force: bool = False, console: Console
     import timm
     from timm.data import create_transform, resolve_data_config
 
-    manifest_path = config.manifests_dir / "images_clean.csv"
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Missing manifest: {manifest_path}")
-    rows = _load_manifest(manifest_path)
+    rows, manifest_used = _load_manifest(config)
     n = len(rows)
 
     config.embeddings_dir.mkdir(parents=True, exist_ok=True)
     emb_path = config.embeddings_dir / "dino.npy"
     meta_path = config.embeddings_dir / "dino_meta.json"
+    cache_root = config.embeddings_dir / "cache" / "dino"
 
     if emb_path.exists() and not force:
         arr = np.load(emb_path, mmap_mode="r")
@@ -79,19 +78,57 @@ def run_embed_dino(config: PipelineConfig, force: bool = False, console: Console
     data_cfg = resolve_data_config({}, model=model)
     transform = create_transform(**data_cfg, is_training=False)
 
-    ds = CleanImageDataset(config.images_clean_dir, rows, transform)
-    loader = DataLoader(ds, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
+    row_to_cache: dict[str, Path] = {}
+    in_memory_cache: dict[str, np.ndarray] = {}
+    missing_rows: list[ManifestRow] = []
+    if config.cache_embeddings:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        for row in rows:
+            cp = cache_root / f"{row.image_id}.npy"
+            row_to_cache[row.image_id] = cp
+            if cp.exists() and not force:
+                continue
+            missing_rows.append(row)
+    else:
+        missing_rows = rows
 
-    chunks: list[np.ndarray] = []
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(), console=rich_console) as p:
-        task = p.add_task("Encoding images with DINO", total=n)
-        with torch.inference_mode():
-            for batch, _ in loader:
-                feats = model(batch.to(device))
-                chunks.append(feats.detach().cpu().numpy().astype(np.float32, copy=False))
-                p.update(task, advance=len(batch))
+    if missing_rows:
+        ds = CleanImageDataset(config.images_clean_dir, missing_rows, transform)
+        loader = DataLoader(ds, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
 
-    embeddings = np.concatenate(chunks, axis=0) if chunks else np.empty((0, 0), dtype=np.float32)
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(), console=rich_console) as p:
+            task = p.add_task("Encoding images with DINO", total=len(missing_rows))
+            with torch.inference_mode():
+                for batch, image_ids in loader:
+                    amp_ctx = (
+                        torch.autocast(device_type="cuda", dtype=torch.float16)
+                        if config.mixed_precision and device.type == "cuda"
+                        else nullcontext()
+                    )
+                    with amp_ctx:
+                        feats = model(batch.to(device))
+                    feats_np = feats.detach().cpu().numpy().astype(np.float32, copy=False)
+                    for iid, vec in zip(image_ids, feats_np):
+                        if config.cache_embeddings:
+                            np.save(row_to_cache[iid], vec)
+                        else:
+                            in_memory_cache[iid] = vec
+                    p.update(task, advance=len(batch))
+
+    vectors: list[np.ndarray] = []
+    for row in rows:
+        if config.cache_embeddings:
+            cp = row_to_cache[row.image_id]
+            if not cp.exists():
+                raise RuntimeError(f"Missing DINO cache for image_id={row.image_id}")
+            vectors.append(np.load(cp).astype(np.float32, copy=False))
+        else:
+            vec = in_memory_cache.get(row.image_id)
+            if vec is None:
+                raise RuntimeError(f"Missing DINO embedding for image_id={row.image_id}")
+            vectors.append(vec.astype(np.float32, copy=False))
+
+    embeddings = np.stack(vectors, axis=0) if vectors else np.empty((0, 0), dtype=np.float32)
     np.save(emb_path, embeddings)
 
     meta = {
@@ -102,6 +139,9 @@ def run_embed_dino(config: PipelineConfig, force: bool = False, console: Console
         "date": datetime.now(timezone.utc).isoformat(),
         "seed": config.seed,
         "device": str(device),
+        "manifest": str(manifest_used),
+        "mixed_precision": bool(config.mixed_precision and device.type == "cuda"),
+        "cache_embeddings": config.cache_embeddings,
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return {"status": "ok", "count": int(embeddings.shape[0]), "embeddings": str(emb_path), "meta": str(meta_path)}

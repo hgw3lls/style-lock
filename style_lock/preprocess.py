@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 from dataclasses import dataclass
 from io import BytesIO
@@ -14,6 +13,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from .config import PipelineConfig
+from .tabular import manifest_path, write_rows
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tiff", ".tif"}
 
@@ -68,17 +68,20 @@ def _stable_image_id(relative_path: Path) -> str:
     return hashlib.sha256(relative_path.as_posix().encode("utf-8")).hexdigest()[:16]
 
 
-def _discover_images(images_raw_dir: Path) -> list[Path]:
+def _discover_images(images_raw_dir: Path, limit: int | None = None) -> list[Path]:
     paths = [
         path
         for path in images_raw_dir.rglob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     ]
-    return sorted(paths)
+    paths = sorted(paths)
+    if limit is not None:
+        return paths[:limit]
+    return paths
 
 
 def _load_candidates(config: PipelineConfig, console: Console) -> tuple[list[CandidateImage], int]:
-    image_paths = _discover_images(config.images_raw_dir)
+    image_paths = _discover_images(config.images_raw_dir, limit=config.limit)
     candidates: list[CandidateImage] = []
     failed = 0
 
@@ -171,31 +174,32 @@ def _write_outputs(config: PipelineConfig, unique_candidates: list[CandidateImag
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(candidate.jpeg_bytes)
 
-    manifest_path = config.manifests_dir / "images_clean.csv"
-    with manifest_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["image_id", "src_path", "clean_path", "width", "height", "phash", "bytes"],
+    out_path = manifest_path(config.manifests_dir, config.use_parquet)
+    rows: list[dict[str, object]] = []
+    for candidate in unique_candidates:
+        rows.append(
+            {
+                "image_id": _stable_image_id(candidate.src_rel),
+                "src_path": candidate.src_rel.as_posix(),
+                "clean_path": candidate.clean_rel.as_posix(),
+                "width": candidate.width,
+                "height": candidate.height,
+                "phash": str(candidate.phash),
+                "bytes": candidate.num_bytes,
+            }
         )
-        writer.writeheader()
-        for candidate in unique_candidates:
-            writer.writerow(
-                {
-                    "image_id": _stable_image_id(candidate.src_rel),
-                    "src_path": candidate.src_rel.as_posix(),
-                    "clean_path": candidate.clean_rel.as_posix(),
-                    "width": candidate.width,
-                    "height": candidate.height,
-                    "phash": str(candidate.phash),
-                    "bytes": candidate.num_bytes,
-                }
-            )
+    write_rows(
+        out_path,
+        rows,
+        fieldnames=["image_id", "src_path", "clean_path", "width", "height", "phash", "bytes"],
+        use_parquet=config.use_parquet,
+    )
 
-    return manifest_path
+    return out_path
 
 
 def run_preprocess(config: PipelineConfig, console: Console | None = None) -> dict[str, int | str]:
-    """Run preprocessing + near-duplicate removal and emit a manifest CSV."""
+    """Run preprocessing + near-duplicate removal and emit a manifest table."""
 
     rich_console = console or Console()
 

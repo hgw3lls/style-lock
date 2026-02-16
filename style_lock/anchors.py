@@ -14,6 +14,7 @@ from PIL import Image
 from rich.console import Console
 
 from .config import PipelineConfig
+from .tabular import manifest_path, read_rows
 
 
 @dataclass
@@ -22,12 +23,11 @@ class ManifestRow:
     clean_path: str
 
 
-def _load_manifest(path: Path) -> list[ManifestRow]:
-    rows: list[ManifestRow] = []
-    with path.open("r", encoding="utf-8", newline="") as h:
-        reader = csv.DictReader(h)
-        for r in reader:
-            rows.append(ManifestRow(image_id=r["image_id"], clean_path=r["clean_path"]))
+def _load_manifest(config: PipelineConfig) -> list[ManifestRow]:
+    rows_raw = read_rows(manifest_path(config.manifests_dir, config.use_parquet))
+    rows = [ManifestRow(image_id=str(r["image_id"]), clean_path=str(r["clean_path"])) for r in rows_raw]
+    if config.limit is not None:
+        rows = rows[: config.limit]
     return rows
 
 
@@ -53,7 +53,7 @@ def run_anchors(config: PipelineConfig, force: bool = False, console: Console | 
 
     style_vec = np.load(config.outputs_dir / "style_vec.npy")
     cluster_map = json.loads((config.outputs_dir / "clusters.json").read_text(encoding="utf-8"))
-    manifest = _load_manifest(config.manifests_dir / "images_clean.csv")
+    manifest = _load_manifest(config)
 
     if style_vec.ndim != 2 or style_vec.shape[0] != len(manifest):
         raise ValueError("style_vec row count must match manifest")
